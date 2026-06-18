@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#02030e"/>
+<title>NEON DECAY · CHRONOS UNIT</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Tektur:wght@400;500;700&family=Share+Tech+Mono&family=Rationale&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{
+    width:100%;height:100%;background:#02030e;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right)
+            env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  canvas{display:block;touch-action:none}
+  #ui{
+    position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;
+    padding:env(safe-area-inset-top,16px) env(safe-area-inset-right,16px)
+            env(safe-area-inset-bottom,16px) env(safe-area-inset-left,16px);
+  }
+  .corner{
+    position:absolute;font-family:'Share Tech Mono',monospace;
+    font-size:clamp(12px,3.5vw,22px);letter-spacing:.10em;color:#29818f;opacity:.85;
+  }
+  #tl{top:max(22px,env(safe-area-inset-top,22px));left:max(20px,env(safe-area-inset-left,20px))}
+  #tr{top:max(22px,env(safe-area-inset-top,22px));right:max(20px,env(safe-area-inset-right,20px));text-align:right}
+  #bl{bottom:max(22px,env(safe-area-inset-bottom,22px));left:max(20px,env(safe-area-inset-left,20px))}
+  #br{bottom:max(22px,env(safe-area-inset-bottom,22px));right:max(20px,env(safe-area-inset-right,20px));text-align:right;color:#e06000}
+  .blink{animation:blink 1.4s step-end infinite}
+  @keyframes blink{0%,100%{opacity:.85}50%{opacity:.25}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div class="corner" id="tl">RA-07</div>
+  <div class="corner" id="tr">ΔT:<span id="ms">0.00</span></div>
+  <div class="corner" id="bl">NODE 12</div>
+  <div class="corner" id="br">PWR:<span class="blink">██</span>▓░</div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const PI2    = Math.PI * 2;
+
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const DPR    = Math.min(window.devicePixelRatio || 1, IS_IOS ? 2 : 3);
+const BS     = IS_IOS ? 0.55 : 1.0; // blur scale
+
+let W, H, cx, cy, R;
+let staticCache = null;
+let timeCache   = null;
+let lastSec     = -1;
+
+const C = {
+  cyan:'#00ffff', mag:'#ff00c8', orange:'#ff8200', green:'#00ff64',
+  pink:'#ff3ca0', yellow:'#ffdc00', blue:'#3c64ff', violet:'#b428ff',
+  white:'#ffffff', bg:'#02030e',
+};
+const SEG = [C.cyan,'#00c8ff',C.blue,C.violet,C.mag,C.pink,
+             C.orange,C.yellow,C.green,'#00c850',C.cyan,'#50d2ff'];
+
+const TZ = (()=>{
+  try{
+    const off=-new Date().getTimezoneOffset(), sign=off>=0?'+':'-';
+    const abs=Math.abs(off), hh=Math.floor(abs/60), mm=abs%60;
+    return mm?`UTC${sign}${hh}:${String(mm).padStart(2,'0')}`:`UTC${sign}${hh}`;
+  }catch(e){return 'UTC';}
+})();
+
+// Generic glow draw functions for any CanvasRenderingContext2d
+function _arc(c,cx,cy,r,a0,a1,col,lw,blur,al=1){
+  if(a0===a1)return;
+  const b=blur*BS;
+  c.save();c.globalAlpha=al;c.strokeStyle=col;c.lineWidth=lw;
+  c.shadowColor=col;c.shadowBlur=b;
+  c.beginPath();c.arc(cx,cy,r,a0,a1);c.stroke();
+  if(!IS_IOS){c.shadowBlur=b*0.4;c.globalAlpha=al*0.5;c.lineWidth=lw*0.5;c.beginPath();c.arc(cx,cy,r,a0,a1);c.stroke();}
+  c.restore();
+}
+function _line(c,x1,y1,x2,y2,col,lw,blur,al=1){
+  const b=blur*BS;
+  c.save();c.lineCap='round';c.globalAlpha=al;c.strokeStyle=col;c.lineWidth=lw;
+  c.shadowColor=col;c.shadowBlur=b;
+  c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();
+  if(!IS_IOS){c.shadowBlur=b*0.35;c.globalAlpha=al*0.45;c.lineWidth=lw*0.5;c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();}
+  c.restore();
+}
+function _dot(c,x,y,r,col,blur,al=1){
+  const b=blur*BS;
+  c.save();c.globalAlpha=al;c.fillStyle=col;c.shadowColor=col;c.shadowBlur=b;
+  c.beginPath();c.arc(x,y,r,0,PI2);c.fill();
+  c.restore();
+}
+function _txt(c,str,x,y,fnt,col,blur,align='center',base='middle'){
+  const b=blur*BS;
+  c.save();c.font=fnt;c.fillStyle=col;c.textAlign=align;c.textBaseline=base;
+  c.shadowColor=col;c.shadowBlur=b;c.fillText(str,x,y);
+  c.shadowBlur=b*0.4;c.globalAlpha=0.6;c.fillText(str,x,y);
+  c.restore();
+}
+
+function makeOC(){
+  const oc=document.createElement('canvas');
+  oc.width=Math.round(W*DPR);oc.height=Math.round(H*DPR);
+  const c=oc.getContext('2d');c.scale(DPR,DPR);
+  return {oc,c};
+}
+
+// Build static layer once — everything that never changes between frames
+function buildStatic(){
+  const {oc,c} = makeOC();
+  const r=R;
+
+  // Background
+  c.fillStyle=C.bg; c.fillRect(0,0,W,H);
+  const gr=c.createRadialGradient(cx,cy,0,cx,cy,r*1.6);
+  gr.addColorStop(0,'rgba(0,15,40,0.55)');
+  gr.addColorStop(0.5,'rgba(0,8,22,0.35)');
+  gr.addColorStop(1,'rgba(0,0,0,0)');
+  c.fillStyle=gr; c.fillRect(0,0,W,H);
+
+  // Scanlines
+  for(let y=0;y<H;y+=4){c.fillStyle='rgba(0,0,0,0.10)';c.fillRect(0,y,W,1);}
+
+  // Grid
+  c.strokeStyle='rgba(0,180,220,0.18)';c.lineWidth=0.5;
+  const gs=W/30;
+  for(let x=0;x<W;x+=gs){c.beginPath();c.moveTo(x,0);c.lineTo(x,H);c.stroke();}
+  for(let y=0;y<H;y+=gs){c.beginPath();c.moveTo(0,y);c.lineTo(W,y);c.stroke();}
+
+  // Outer rings
+  _arc(c,cx,cy,r*1.000,0,PI2,C.cyan, 1.5,W*0.018,0.5);
+  _arc(c,cx,cy,r*0.978,0,PI2,C.cyan, 1.5,W*0.010,0.9);
+  _arc(c,cx,cy,r*0.958,0,PI2,C.mag,  1.2,W*0.013,0.7);
+
+  // 60 ticks
+  for(let i=0;i<60;i++){
+    const a=(i/60)*PI2-Math.PI/2;
+    const is5=i%5===0,is15=i%15===0;
+    const ri=is15?r*0.948:is5?r*0.962:r*0.982;
+    const col=is15?C.mag:is5?C.cyan:'#00aaba';
+    const lw=is15?W*0.0022:is5?W*0.0016:W*0.0007;
+    const bl=is15?W*0.007:is5?W*0.004:W*0.002;
+    _line(c,cx+r*Math.cos(a),cy+r*Math.sin(a),cx+ri*Math.cos(a),cy+ri*Math.sin(a),col,lw,bl);
+  }
+
+  // Outer dots
+  for(let i=0;i<60;i+=5){
+    const a=(i/60)*PI2-Math.PI/2;
+    _dot(c,cx+r*1.012*Math.cos(a),cy+r*1.012*Math.sin(a),W*0.003,i%15===0?C.mag:C.cyan,W*0.008);
+  }
+
+  // Rainbow segments
+  for(let i=0;i<12;i++){
+    const a0=(i*30-88)*Math.PI/180,a1=(i*30-88+24)*Math.PI/180;
+    _arc(c,cx,cy,r*0.908,a0,a1,SEG[i],W*0.004,W*0.014,0.95);
+    _arc(c,cx,cy,r*0.888,a0+0.03,a1-0.03,SEG[i],W*0.0013,W*0.005,0.7);
+  }
+
+  // Hour ring
+  _arc(c,cx,cy,r*0.852,0,PI2,C.green,  W*0.0018,W*0.016,0.9);
+  _arc(c,cx,cy,r*0.826,0,PI2,'#008c46',W*0.0008,W*0.005,0.6);
+
+  // Hour ticks + numerals
+  const fH=`${W*0.060}px 'Rationale',sans-serif`;
+  for(let i=0;i<12;i++){
+    const a=(i/12)*PI2-Math.PI/2;
+    _line(c,cx+r*0.850*Math.cos(a),cy+r*0.850*Math.sin(a),
+            cx+r*0.828*Math.cos(a),cy+r*0.828*Math.sin(a),C.green,W*0.003,W*0.008);
+    _txt(c,String(i===0?12:i),cx+r*0.762*Math.cos(a),cy+r*0.762*Math.sin(a),fH,C.green,W*0.010);
+  }
+
+  // Mid rings
+  _arc(c,cx,cy,r*0.698,0,PI2,C.orange, W*0.0012,W*0.014,0.8);
+  _arc(c,cx,cy,r*0.669,0,PI2,'#903200',W*0.0008,W*0.005,0.5);
+  _arc(c,cx,cy,r*0.556,0,PI2,C.violet, W*0.0012,W*0.014,0.8);
+
+  // Yellow accent ticks
+  for(const i of [0,3,6,9]){
+    const a=(i/12)*PI2-Math.PI/2;
+    _line(c,cx+r*0.528*Math.cos(a),cy+r*0.528*Math.sin(a),
+            cx+r*0.556*Math.cos(a),cy+r*0.556*Math.sin(a),C.yellow,W*0.0015,W*0.008);
+  }
+
+  // Static text
+  _txt(c,'NEON DECAY',       cx,cy-r*0.230,`500 ${W*0.026}px 'Tektur',monospace`,C.violet,W*0.012);
+  _txt(c,'· CHRONOS UNIT ·',cx,cy-r*0.176,`${W*0.021}px 'Share Tech Mono',monospace`,C.yellow,W*0.007);
+  _txt(c,'SYS.CLK // v4.7', cx,cy+r*0.280,`${W*0.021}px 'Share Tech Mono',monospace`,C.violet,W*0.010);
+  _txt(c,`FREQ 60Hz · SYNC OK · ${TZ}`,cx,cy+r*0.340,`${W*0.021}px 'Share Tech Mono',monospace`,C.blue,W*0.005);
+
+  // Vignette baked in
+  const vg=c.createRadialGradient(cx,cy,r*0.7,cx,cy,r*1.4);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.82)');
+  c.fillStyle=vg; c.fillRect(0,0,W,H);
+
+  staticCache=oc;
+}
+
+// Build digital time cache — only once per second
+function buildTimeCache(h,m,s){
+  const pad=n=>String(n).padStart(2,'0');
+  const {oc,c}=makeOC();
+  _txt(c,`${pad(h)}:${pad(m)}:${pad(s)}`,cx,cy+R*0.194,
+       `500 ${W*0.056}px 'Share Tech Mono',monospace`,C.orange,W*0.022);
+  timeCache=oc;
+}
+
+// Per-frame: animated arcs on main ctx
+function drawArcs(h,m,s,ms){
+  const r=R, f2a=f=>f*PI2-Math.PI/2;
+  const sf=(s+ms/1000)/60, mf=(m+s/60+ms/60000)/60, hf=((h%12)+m/60+s/3600)/12;
+  const sa=f2a(sf), ma=f2a(mf), ha=f2a(hf);
+  function tail(f,a1,a2){const n=((f%1)+1)%1;return n>=a1&&n<a2?f2a(a1):f2a(a2);}
+  function darc(rad,hand,t,col,col2,lw,bl){
+    _arc(ctx,cx,cy,rad,t,hand,col,lw,bl,0.9);
+    _arc(ctx,cx,cy,rad,t,hand,col2,lw*0.2,bl*0.15,0.7);
+  }
+  darc(r*0.582,sa,tail(sf,0,0.5),      C.mag,  '#ffc0e8',W*0.004,W*0.018);
+  darc(r*0.610,ma,tail(mf,20/60,50/60),C.cyan, '#c0ffff', W*0.005,W*0.020);
+  darc(r*0.638,ha,tail(hf,2/12,8/12),  C.green,'#c0ffd8', W*0.005,W*0.020);
+}
+
+// Per-frame: hands on main ctx
+function drawHands(h,m,s,ms){
+  const r=R;
+  const sa=((s+ms/1000)/60)*PI2-Math.PI/2;
+  const ma=((m+s/60+ms/60000)/60)*PI2-Math.PI/2;
+  const ha=(((h%12)+m/60+s/3600)/12)*PI2-Math.PI/2;
+  _line(ctx,cx-r*0.066*Math.cos(ha),cy-r*0.066*Math.sin(ha),cx+r*0.306*Math.cos(ha),cy+r*0.306*Math.sin(ha),C.green,W*0.006,W*0.026);
+  _dot(ctx,cx+r*0.306*Math.cos(ha),cy+r*0.306*Math.sin(ha),W*0.007,C.green,W*0.018);
+  _line(ctx,cx-r*0.078*Math.cos(ma),cy-r*0.078*Math.sin(ma),cx+r*0.454*Math.cos(ma),cy+r*0.454*Math.sin(ma),C.cyan,W*0.004,W*0.020);
+  _dot(ctx,cx+r*0.454*Math.cos(ma),cy+r*0.454*Math.sin(ma),W*0.005,C.cyan,W*0.014);
+  _line(ctx,cx-r*0.094*Math.cos(sa),cy-r*0.094*Math.sin(sa),cx+r*0.528*Math.cos(sa),cy+r*0.528*Math.sin(sa),C.mag,W*0.002,W*0.014);
+  _dot(ctx,cx+r*0.528*Math.cos(sa),cy+r*0.528*Math.sin(sa),W*0.003,C.mag,W*0.010);
+  _dot(ctx,cx,cy,W*0.016,C.white,W*0.022);
+  _dot(ctx,cx,cy,W*0.009,C.cyan, W*0.012);
+  _dot(ctx,cx,cy,W*0.003,C.white,W*0.004);
+}
+
+// Main loop
+let lastTime  = performance.now();
+const startTime = performance.now(); // track age since page load
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)lastTime=performance.now();});
+
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt=(now-lastTime).toFixed(2);
+  document.getElementById('ms').textContent=+dt<100?dt:'99.99';
+  lastTime=now;
+
+  const t=new Date(),h=t.getHours(),m=t.getMinutes(),s=t.getSeconds(),ms=t.getMilliseconds();
+  const age = now - startTime; // ms since page load
+
+  if(age < 1000){
+    // First second: rebuild static every frame so fonts have time to load
+    buildStatic();
+    buildTimeCache(h,m,s);
+    lastSec=s;
+  } else if(s !== lastSec){
+    // After first second: rebuild static once per second (font is loaded by now)
+    buildStatic();
+    buildTimeCache(h,m,s);
+    lastSec=s;
+  }
+
+  // 1. Static layer
+  ctx.drawImage(staticCache,0,0,W,H);
+
+  // 2. Animated arcs
+  drawArcs(h,m,s,ms);
+
+  // 3. Hands
+  drawHands(h,m,s,ms);
+
+  // 4. Digital time
+  if(timeCache) ctx.drawImage(timeCache,0,0,W,H);
+}
+
+function init(){
+  const vw=window.visualViewport?window.visualViewport.width:window.innerWidth;
+  const vh=window.visualViewport?window.visualViewport.height:window.innerHeight;
+  const s=Math.min(vw,vh);
+  canvas.width=Math.round(s*DPR); canvas.height=Math.round(s*DPR);
+  canvas.style.width=s+'px'; canvas.style.height=s+'px';
+  ctx.scale(DPR,DPR);
+  W=H=s; cx=cy=s/2; R=s*0.455;
+  buildStatic();
+  timeCache=null; lastSec=-1;
+}
+
+function resize(){init();}
+if(window.visualViewport){window.visualViewport.addEventListener('resize',resize);}
+else{window.addEventListener('resize',resize);}
+window.addEventListener('orientationchange',()=>setTimeout(resize,120));
+
+init();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
