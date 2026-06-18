@@ -37,8 +37,7 @@ No installation or build step required.
 Download `index.html` and open it in any modern browser.
 
 **Option 2 — GitHub Pages:**
-Visit the live demo at:
-[Cyberpunk Clock](https://tengyanhaiin-star.github.io/Cyberpunk-Clock/)
+Visit the live demo at: [Cyberpunk Clock](https://tengyanhaiin-star.github.io/Cyberpunk-Clock/)
 
 ## Browser Compatibility
 
